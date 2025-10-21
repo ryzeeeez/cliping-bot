@@ -6,11 +6,18 @@ from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from ..const import StorageMode
+
 
 MUTE_CALLBACK = "mute"
 DETAILS_CALLBACK = "details"
 PRIORITY_CALLBACK = "priority"
 CANCEL_CALLBACK = "cancel"
+SETTINGS_OPEN = "settings:open"
+
+
+def _storage_label(mode: StorageMode) -> str:
+    return "Local" if mode is StorageMode.LOCAL else "Cloud"
 
 
 def build_status_keyboard(job_id: str, show_details: bool, is_pro: bool) -> InlineKeyboardMarkup:
@@ -26,7 +33,9 @@ def build_status_keyboard(job_id: str, show_details: bool, is_pro: bool) -> Inli
     return InlineKeyboardMarkup.from_row(buttons)
 
 
-def build_start_keyboard(presets: list[tuple[str, str]], pro_mode_enabled: bool) -> InlineKeyboardMarkup:
+def build_start_keyboard(
+    presets: list[tuple[str, str]], pro_mode_enabled: bool, storage_mode: StorageMode
+) -> InlineKeyboardMarkup:
     rows = []
     current_row = []
     for emoji, name in presets:
@@ -44,4 +53,30 @@ def build_start_keyboard(presets: list[tuple[str, str]], pro_mode_enabled: bool)
             )
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                f"🗃️ Stockage : {_storage_label(storage_mode)}",
+                callback_data=SETTINGS_OPEN,
+            )
+        ]
+    )
     return InlineKeyboardMarkup(rows)
+
+
+def build_settings_keyboard(storage_mode: StorageMode) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    ("✅ " if storage_mode is StorageMode.LOCAL else "") + "Local",
+                    callback_data="settings:storage:local",
+                ),
+                InlineKeyboardButton(
+                    ("✅ " if storage_mode is StorageMode.CLOUD else "") + "Cloud",
+                    callback_data="settings:storage:cloud",
+                ),
+            ],
+            [InlineKeyboardButton("Fermer", callback_data="settings:close")],
+        ]
+    )

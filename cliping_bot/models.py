@@ -13,6 +13,7 @@ from .const import (
     DEFAULT_INTRO_OUTRO_SKIP,
     ClipFormat,
     JobPhase,
+    StorageMode,
     SubscriptionPlan,
 )
 
@@ -89,6 +90,9 @@ class JobRequest(BaseModel):
     job_id: str
     mode: Literal["auto", "manual", "podcast"] = "auto"
     manual_clips: Optional[list[ClipSlice]] = None
+    storage_mode: StorageMode = StorageMode.LOCAL
+    output_path: Optional[str] = None
+    storage_metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkerResult(BaseModel):
@@ -98,3 +102,5 @@ class WorkerResult(BaseModel):
     telegram_file_id: Optional[str] = None
     clips: list[ClipSlice]
     metadata: dict[str, str] = Field(default_factory=dict)
+    storage_mode: StorageMode = StorageMode.CLOUD
+    local_paths: list[str] = Field(default_factory=list)

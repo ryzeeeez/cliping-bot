@@ -6,19 +6,21 @@ import asyncio
 from typing import Any, Dict
 
 from telegram import Message, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes,
                           ConversationHandler)
 
-from ..const import ClipFormat, SubscriptionPlan
+from ..config import get_settings
+from ..const import ClipFormat, JobPhase, StorageMode, SubscriptionPlan
 from ..logging import get_logger
 from ..models import ClipOptions
 from ..services.pipeline import pipeline
 from ..services.progress import render_progress_message
 from ..services.presets import PRESETS, get_default_preset
+from ..services.preferences import get_preferences_store
 from ..utils import URLValidationError, validate_source_url
 from . import messages
-from .keyboards import start_keyboard, status_keyboard
+from .keyboards import settings_keyboard, start_keyboard, status_keyboard
 
 logger = get_logger(__name__)
 
@@ -68,11 +70,26 @@ def _parse_options(args: list[str], base_options: ClipOptions) -> ClipOptions:
     return options
 
 
+async def _ensure_storage_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> StorageMode:
+    cached = context.user_data.get("storage_mode")
+    if cached:
+        try:
+            return StorageMode(cached)
+        except ValueError:
+            pass
+    store = get_preferences_store()
+    default_mode = get_settings().storage_mode_enum
+    prefs = await store.get(update.effective_user.id, default_mode)
+    context.user_data["storage_mode"] = prefs.storage_mode.value
+    return prefs.storage_mode
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     pro_mode = context.user_data.get("pro_mode", False)
+    storage_mode = await _ensure_storage_mode(update, context)
     await update.effective_chat.send_message(
-        messages.START_HEADER,
-        reply_markup=start_keyboard(pro_mode),
+        messages.start_header(storage_mode),
+        reply_markup=start_keyboard(pro_mode, storage_mode),
     )
 
 
@@ -111,6 +128,7 @@ async def clip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     base_preset = get_default_preset()
     options = _parse_options(context.args[1:], base_preset.options)
     plan = _get_user_plan(context)
+    storage_mode = await _ensure_storage_mode(update, context)
     try:
         state = await pipeline.submit_job(
             user_id=update.effective_user.id,
@@ -118,13 +136,14 @@ async def clip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             options=options,
             plan=plan,
             mode="auto",
+            storage_mode=storage_mode,
         )
     except ValueError as exc:
         await update.effective_chat.send_message(f"⚠️ {exc}")
         return
     progress = state.tracker.update_progress(phase=state.tracker.current_phase, ratio_in_phase=0.0)
     message = await update.effective_chat.send_message(
-        "Job créé. Analyse en cours…",
+        messages.job_created(storage_mode),
         reply_markup=status_keyboard(state.request.job_id, False, plan is SubscriptionPlan.PRO),
     )
     state.status_message_id = message.message_id
@@ -142,6 +161,7 @@ async def select_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.effective_chat.send_message(messages.ERROR_INVALID_URL)
         return
     plan = _get_user_plan(context)
+    storage_mode = await _ensure_storage_mode(update, context)
     preset = next(p for p in PRESETS if "Manuel" in p.name)
     options = preset.options
     state = await pipeline.submit_job(
@@ -150,6 +170,7 @@ async def select_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         options=options,
         plan=plan,
         mode="manual",
+        storage_mode=storage_mode,
     )
     msg = (
         "🎛️ Mode manuel initialisé. Utilise les boutons pour définir les segments."
@@ -163,6 +184,15 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.effective_chat.send_message("Quel job dois-je annuler ? Utilise le bouton ❌ du statut.")
 
 
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    storage_mode = await _ensure_storage_mode(update, context)
+    await update.effective_chat.send_message(
+        messages.settings_overview(storage_mode),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=settings_keyboard(storage_mode),
+    )
+
+
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -170,7 +200,8 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "toggle_pro":
         current = context.user_data.get("pro_mode", False)
         context.user_data["pro_mode"] = not current
-        await query.edit_message_reply_markup(start_keyboard(not current))
+        storage_mode = await _ensure_storage_mode(update, context)
+        await query.edit_message_reply_markup(start_keyboard(not current, storage_mode))
         return
     if data.startswith("preset:"):
         preset_name = data.split(":", 1)[1]
@@ -180,6 +211,33 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         context.user_data["selected_preset"] = preset.name
         await query.answer(f"Preset {preset.name} sélectionné.")
+        return
+    if data == "settings:open":
+        storage_mode = await _ensure_storage_mode(update, context)
+        await query.message.reply_text(
+            messages.settings_overview(storage_mode),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=settings_keyboard(storage_mode),
+        )
+        return
+    if data == "settings:close":
+        try:
+            await query.message.delete()
+        except Exception:  # pragma: no cover - message déjà supprimé
+            pass
+        return
+    if data.startswith("settings:storage:"):
+        _, _, raw_mode = data.split(":", 2)
+        try:
+            storage_mode = StorageMode(raw_mode)
+        except ValueError:
+            await query.answer("Mode inconnu", show_alert=True)
+            return
+        context.user_data["storage_mode"] = storage_mode.value
+        store = get_preferences_store()
+        await store.set_storage_mode(update.effective_user.id, storage_mode)
+        await query.edit_message_reply_markup(settings_keyboard(storage_mode))
+        await query.answer(f"Stockage {storage_mode.value} activé.")
         return
     job_id, action = data.split(":", 1)
     state = pipeline.get_job_state(job_id)
@@ -217,11 +275,17 @@ async def _poll_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, job
         if not progress:
             continue
         details = []
+        if state.storage_allocation and state.storage_allocation.warnings:
+            details.extend(f"⚠️ {warning}" for warning in state.storage_allocation.warnings)
         if state.details_mode and progress.details:
             details.extend(f"{k}: {v}" for k, v in progress.details.items())
         if not details:
             details = ["Traitement en cours…"]
+        if state.tracker.stalled():
+            details.append("Ralentissement détecté, recalcul de l'ETA…")
         text = render_progress_message(progress, details)
+        if progress.phase is JobPhase.DELIVERY:
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=state.status_message_id,
@@ -238,5 +302,6 @@ HANDLERS = [
     CommandHandler("clip", clip_command),
     CommandHandler("select", select_command),
     CommandHandler("cancel", cancel_command),
+    CommandHandler("settings", settings_command),
     CallbackQueryHandler(callback_query),
 ]

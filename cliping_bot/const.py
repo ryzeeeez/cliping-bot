@@ -42,6 +42,11 @@ class SubscriptionPlan(str, Enum):
     PRO = "pro"
 
 
+class StorageMode(str, Enum):
+    LOCAL = "local"
+    CLOUD = "cloud"
+
+
 DEFAULT_INTRO_OUTRO_SKIP = 5
 DEFAULT_CLIP_COUNT = 3
 DEFAULT_CLIP_DURATION = 30

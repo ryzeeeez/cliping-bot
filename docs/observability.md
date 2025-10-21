@@ -4,8 +4,8 @@ L'orchestrateur expose des logs structurés et des métriques pour suivre la san
 
 ## Logs
 
-- Format JSON via `structlog` avec les champs : `timestamp`, `level`, `event`, `job_id`, `phase`, `user_id`, `plan`, `duration_ms`,
-  `source_url`, `error_code`.
+- Format JSON via `structlog` avec les champs : `timestamp`, `level`, `event`, `job_id`, `phase`, `user_id`, `plan`,
+  `storage_mode`, `storage_path`, `duration_ms`, `source_url`, `error_code`.
 - Les logs sont envoyés vers stdout (collecté par la plateforme) et peuvent être redirigés vers Loki, Datadog ou CloudWatch.
 - Les erreurs répétées (même `error_code` > N/minute) déclenchent une alerte vers l'équipe support.
 
@@ -16,7 +16,7 @@ L'orchestrateur expose des logs structurés et des métriques pour suivre la san
 | `clipbot_jobs_started_total`| Counter   | Jobs entrants, tags : `plan`, `mode`, `platform`.            |
 | `clipbot_jobs_failed_total` | Counter   | Jobs échoués par `error_code`.                               |
 | `clipbot_phase_seconds`     | Histogram | Temps passé par phase (Analyse, AutoPick, Subtitles, Export, Livraison). |
-| `clipbot_upload_bitrate`    | Gauge     | Débit moyen observé vers le stockage et Telegram.            |
+| `clipbot_upload_bitrate`    | Gauge     | Débit moyen observé vers le stockage (local/cloud) et Telegram. |
 | `clipbot_queue_length`      | Gauge     | Longueur de la file Redis.                                   |
 | `clipbot_webhook_latency`   | Histogram | Latence des webhooks worker -> bot.                          |
 
