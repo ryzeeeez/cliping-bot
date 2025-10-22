@@ -4,20 +4,30 @@ from __future__ import annotations
 
 import asyncio
 
-from .bot.routing import build_application
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from .bot.routing import build_router
+from .config import get_settings
+from .logging import configure_logging
+from .services.prerequisites import ensure_prerequisites
 
 
 async def main() -> None:
-    app = build_application()
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    try:
-        await app.updater.wait_until_finished()
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    settings = get_settings()
+    configure_logging()
+    await ensure_prerequisites()
+
+    bot = Bot(
+        token=settings.telegram_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+    )
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(build_router())
+
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":  # pragma: no cover - exécution directe

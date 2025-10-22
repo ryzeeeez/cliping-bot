@@ -61,7 +61,9 @@ class LocalStorageManager:
     async def allocate(self, job_id: str) -> StorageAllocation:
         async with self._lock:
             base_path, warnings = await self._resolve_base_path()
-            job_path = base_path / job_id
+            prefix = datetime.utcnow().strftime("clip_%Y%m%d%H%M%S")
+            suffix = job_id.replace("-", "")[:6]
+            job_path = base_path / f"{prefix}_{suffix}"
             job_path.mkdir(parents=True, exist_ok=True)
             self._tracked_jobs[job_id] = job_path
             return StorageAllocation(

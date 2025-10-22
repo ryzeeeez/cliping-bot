@@ -18,6 +18,8 @@ logger = get_logger(__name__)
 
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GiB approx.
 SILENCE_RE = re.compile(r"silence_(start|end):\s*([0-9.]+)")
+ASTATS_TIME_RE = re.compile(r"pts_time:([0-9.]+)")
+ASTATS_RMS_RE = re.compile(r"RMS_level:\s*(-?[0-9.]+)")
 CHAPTER_BLACKLIST = {"intro", "outro", "sponsor", "credit"}
 
 
@@ -85,11 +87,12 @@ class AutoClipRunner:
         clips = await self._select_segments()
         if not clips:
             raise ClipProcessingError("Aucun segment pertinent trouvé", "❌ Impossible d'extraire un clip pertinent.")
-        await progress_cb(
-            JobPhase.SUBTITLES,
-            1.0,
-            [f"{len(clips)} segment(s) sélectionné(s)."]
-        )
+        status_lines = [f"{len(clips)} segment(s) sélectionné(s)."]
+        if len(clips) < self.options.clips:
+            status_lines.append(
+                f"Durée limitée : {len(clips)}/{self.options.clips} clips prêts."
+            )
+        await progress_cb(JobPhase.SUBTITLES, 1.0, status_lines)
 
         await progress_cb(JobPhase.EXPORT, 0.02, ["Encodage des clips…"])
         files = await self._encode_clips(clips, progress_cb)
@@ -237,6 +240,7 @@ class AutoClipRunner:
         target = float(self.options.duration)
         intro_skip = float(self.options.intro_outro_skip)
         max_duration = self.duration or float(self.metadata.get("duration") or 0)
+        desired = self.options.clips
 
         if chapters:
             for chapter in chapters:
@@ -251,57 +255,67 @@ class AutoClipRunner:
                 end = min(max_duration, end)
                 if end - start < 5:
                     continue
-                duration = min(target, end - start)
-                clips.append(ClipSlice(start=start, end=start + duration))
-                if len(clips) >= self.options.clips:
+                window = (start, end)
+                candidate = self._build_clip_in_window(window, target, max_duration)
+                candidate = self._nudge_to_pause(candidate, window, [], max_duration)
+                clips.append(candidate)
+                if len(clips) >= desired:
                     break
-        if len(clips) >= self.options.clips:
-            return clips[: self.options.clips]
+        if len(clips) >= desired:
+            return sorted(clips, key=lambda item: item.start)[:desired]
 
         if self.video_path is None:
             return clips
 
         silences = await self._detect_silences()
         segments = self._build_non_silent_segments(silences, max_duration, intro_skip)
+        energy_peaks = await self._analyze_energy()
         min_spacing = 10.0
-        for start, end in segments:
-            if len(clips) >= self.options.clips:
+
+        def _too_close(candidate: ClipSlice) -> bool:
+            return any(abs(candidate.start - existing.start) < min_spacing for existing in clips)
+
+        if energy_peaks:
+            for timestamp, _score in sorted(energy_peaks, key=lambda item: item[1], reverse=True):
+                if len(clips) >= desired:
+                    break
+                window = self._segment_for_time(timestamp, segments)
+                if not window:
+                    continue
+                candidate = self._build_clip_in_window(window, target, max_duration, pivot=timestamp)
+                candidate = self._nudge_to_pause(candidate, window, silences, max_duration)
+                if candidate.duration < 3 or _too_close(candidate):
+                    continue
+                clips.append(candidate)
+
+        for window in segments:
+            if len(clips) >= desired:
                 break
-            span = end - start
-            if span < 3:
+            candidate = self._build_clip_in_window(window, target, max_duration)
+            candidate = self._nudge_to_pause(candidate, window, silences, max_duration)
+            if candidate.duration < 3 or _too_close(candidate):
                 continue
-            start_candidate = start
-            if span > target:
-                start_candidate = start + (span - target) / 2
-            start_candidate = max(0.0, min(start_candidate, max_duration - target))
-            end_candidate = min(max_duration, start_candidate + target)
-            slice_candidate = ClipSlice(start=start_candidate, end=end_candidate)
-            if any(abs(slice_candidate.start - existing.start) < min_spacing for existing in clips):
-                continue
-            clips.append(slice_candidate)
+            clips.append(candidate)
 
         clips = sorted(clips, key=lambda item: item.start)
-        if len(clips) >= self.options.clips:
-            return clips[: self.options.clips]
+        if len(clips) >= desired:
+            return clips[:desired]
 
-        # Fallback uniforme
-        remaining = self.options.clips - len(clips)
+        # Fallback uniforme si toujours insuffisant
+        remaining = desired - len(clips)
         base_start = intro_skip
-        usable = max(0.0, max_duration - 2 * intro_skip)
-        if usable <= 0:
-            usable = max_duration
-        step = (usable - target) / max(remaining, 1) if usable > target else target + min_spacing
+        usable = max(0.0, max_duration - intro_skip)
+        step = target + min_spacing if usable <= target else max(target, usable / max(remaining, 1))
         current = base_start
-        while len(clips) < self.options.clips and current < max_duration:
-            end = min(max_duration, current + target)
-            slice_candidate = ClipSlice(start=current, end=end)
-            if any(abs(slice_candidate.start - existing.start) < min_spacing for existing in clips):
-                current += max(5.0, step)
-                continue
-            clips.append(slice_candidate)
+        while len(clips) < desired and current < max_duration:
+            window = (current, min(max_duration, current + target))
+            candidate = self._build_clip_in_window(window, target, max_duration)
+            candidate = self._nudge_to_pause(candidate, window, silences, max_duration)
+            if candidate.duration >= 2 and not _too_close(candidate):
+                clips.append(candidate)
             current += max(5.0, step)
 
-        return clips[: self.options.clips]
+        return clips[:desired]
 
     async def _detect_silences(self) -> list[tuple[float, float]]:
         if not self.video_path:
@@ -358,6 +372,111 @@ class AutoClipRunner:
                 continue
             cleaned.append((start, end))
         return cleaned
+
+    async def _analyze_energy(self) -> list[tuple[float, float]]:
+        if not self.video_path:
+            return []
+        cmd = [
+            "ffmpeg",
+            "-i",
+            str(self.video_path),
+            "-vn",
+            "-af",
+            "astats=metadata=1:reset=1",
+            "-f",
+            "null",
+            "-",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return []
+        energy: list[tuple[float, float]] = []
+        current_time: float | None = None
+        for line in stderr.decode("utf-8", errors="ignore").splitlines():
+            time_match = ASTATS_TIME_RE.search(line)
+            if time_match:
+                try:
+                    current_time = float(time_match.group(1))
+                except ValueError:
+                    continue
+            rms_match = ASTATS_RMS_RE.search(line)
+            if rms_match and current_time is not None:
+                try:
+                    rms_value = float(rms_match.group(1))
+                except ValueError:
+                    continue
+                energy.append((current_time, rms_value))
+        return energy
+
+    def _segment_for_time(
+        self, timestamp: float, segments: list[tuple[float, float]]
+    ) -> tuple[float, float] | None:
+        for start, end in segments:
+            if start <= timestamp <= end:
+                return (start, end)
+        return None
+
+    def _build_clip_in_window(
+        self,
+        window: tuple[float, float],
+        target: float,
+        max_duration: float,
+        pivot: float | None = None,
+    ) -> ClipSlice:
+        start, end = window
+        if end <= start:
+            return ClipSlice(start=start, end=min(max_duration, start + max(1.0, target)))
+        span = end - start
+        effective = min(target, span, max_duration - start if max_duration else span)
+        effective = max(0.5, effective)
+        if pivot is None or pivot < start or pivot > end:
+            pivot = start + span / 2
+        candidate_start = pivot - effective / 2
+        candidate_start = max(start, min(candidate_start, end - effective))
+        if max_duration:
+            upper_bound = max(0.0, max_duration - effective)
+            candidate_start = min(candidate_start, upper_bound)
+        candidate_start = max(0.0, candidate_start)
+        candidate_end = min(end, candidate_start + effective)
+        if candidate_end - candidate_start < 0.8:
+            candidate_end = min(end, candidate_start + 0.8)
+        if max_duration:
+            candidate_end = min(candidate_end, max_duration)
+        if candidate_end <= candidate_start:
+            candidate_end = min(end, max_duration or end)
+            candidate_start = max(start, candidate_end - effective)
+        return ClipSlice(start=candidate_start, end=candidate_end)
+
+    def _nudge_to_pause(
+        self,
+        clip: ClipSlice,
+        window: tuple[float, float],
+        silences: list[tuple[float, float]],
+        max_duration: float,
+    ) -> ClipSlice:
+        start, end = clip.start, clip.end
+        window_start, window_end = window
+        for silence_start, silence_end in silences:
+            if window_start <= silence_start <= start and (start - silence_start) < 0.5:
+                start = max(window_start, silence_start - 0.3)
+            if end <= silence_end <= window_end and (silence_end - end) < 0.5:
+                end = min(window_end, silence_end + 0.3)
+        start = max(window_start, start)
+        end = min(window_end, end)
+        if max_duration:
+            end = min(end, max_duration)
+        if end - start < 0.8:
+            end = min(window_end, max_duration if max_duration else window_end, start + 0.8)
+        end = max(start + 0.5, end)
+        if max_duration:
+            end = min(end, max_duration)
+        end = min(end, window_end)
+        return ClipSlice(start=max(0.0, start), end=end)
 
     async def _encode_clips(self, clips: Iterable[ClipSlice], progress_cb) -> list[Path]:
         if not self.video_path:

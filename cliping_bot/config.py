@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseSettings, Field, HttpUrl, validator
 
@@ -14,7 +14,8 @@ from .const import StorageMode
 class Settings(BaseSettings):
     """Paramètres chargés via variables d'environnement (avec défauts intelligents)."""
 
-    telegram_token: str = Field("TEST_TELEGRAM_TOKEN", alias="TELEGRAM_TOKEN")
+    bot_token: str | None = Field(None, alias="BOT_TOKEN")
+    legacy_telegram_token: str | None = Field(None, alias="TELEGRAM_TOKEN")
     telegram_mode: Literal["polling", "webhook"] = Field("polling", alias="TELEGRAM_MODE")
     telegram_webhook_url: HttpUrl | None = Field(None, alias="TELEGRAM_WEBHOOK_URL")
     telegram_webhook_secret: str | None = Field(None, alias="TELEGRAM_WEBHOOK_SECRET")
@@ -49,6 +50,14 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         populate_by_name = True
 
+    @validator("bot_token", always=True)
+    def _ensure_token(cls, value: str | None, values: dict[str, Any]) -> str:  # noqa: D417
+        legacy = values.get("legacy_telegram_token")
+        token = value or legacy
+        if not token:
+            raise ValueError("BOT_TOKEN manquant. Ajoute-le dans ton fichier .env.")
+        return token
+
     @validator("admin_user_ids", pre=True)
     def _split_admin_ids(cls, value: str | list[int]) -> list[int]:  # noqa: D417 - docstring inutile
         if isinstance(value, list):
@@ -56,6 +65,10 @@ class Settings(BaseSettings):
         if not value:
             return []
         return [int(v.strip()) for v in value.split(",") if v.strip()]
+
+    @property
+    def telegram_token(self) -> str:
+        return self.bot_token  # compat
 
     @property
     def storage_mode_enum(self) -> StorageMode:

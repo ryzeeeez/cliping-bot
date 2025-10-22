@@ -11,15 +11,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from telegram import Bot
-from telegram.constants import ChatAction
+from aiogram import Bot
+from aiogram.enums import ChatAction
+from aiogram.types import FSInputFile
 
 from ..const import JobPhase, StorageMode, SubscriptionPlan
 from ..logging import get_logger
 from ..models import ClipOptions, JobProgress, JobRequest
 from ..utils import validate_source_url
 from .local_clip import AutoClipResult, AutoClipRunner, ClipProcessingError
-from .progress import ProgressTracker, render_progress_message
+from .progress import ProgressTracker
 from .storage import StorageAllocation, get_storage_coordinator
 
 logger = get_logger(__name__)
@@ -38,6 +39,8 @@ class JobState:
     last_progress: Optional[JobProgress] = None
     queue_position: int = 0
     storage_allocation: StorageAllocation | None = None
+    progress_task: asyncio.Task | None = None
+    last_status_lines: list[str] = field(default_factory=list)
 
 
 class JobPipeline:
@@ -48,6 +51,7 @@ class JobPipeline:
         self._lock = asyncio.Lock()
         self._storage = get_storage_coordinator()
         self._upload_rates: list[float] = []
+        self._queue_limit = 10
 
     async def submit_job(
         self,
@@ -63,7 +67,6 @@ class JobPipeline:
     ) -> JobState:
         validate_source_url(source_url)
         options.ensure_plan_limits(plan)
-        job_id = str(uuid.uuid4())
         requested_mode = storage_mode or self._storage.settings.storage_mode_enum
         if isinstance(requested_mode, str):
             try:
@@ -72,35 +75,43 @@ class JobPipeline:
                 storage_mode_enum = self._storage.settings.storage_mode_enum
         else:
             storage_mode_enum = requested_mode
-        allocation = await self._storage.allocate(job_id, storage_mode_enum)
-        request = JobRequest(
-            user_id=user_id,
-            chat_id=chat_id,
-            source_url=source_url,
-            options=options,
-            plan=plan,
-            job_id=job_id,
-            mode=mode,
-            manual_clips=manual_clips,
-            storage_mode=storage_mode_enum,
-            output_path=str(allocation.base_path) if allocation.base_path else None,
-            storage_metadata=allocation.metadata,
-        )
-        tracker = ProgressTracker(job_id)
-        state = JobState(
-            request=request,
-            tracker=tracker,
-            bot=bot,
-            chat_id=chat_id,
-            storage_allocation=allocation,
-        )
+
         async with self._lock:
+            for existing in self._jobs.values():
+                if existing.request.user_id == user_id:
+                    raise ValueError("Un clip est déjà en cours pour cet utilisateur.")
+            if len(self._jobs) >= self._queue_limit:
+                raise ValueError("La file est pleine, réessaie dans quelques minutes.")
+            job_id = str(uuid.uuid4())
+            allocation = await self._storage.allocate(job_id, storage_mode_enum)
+            request = JobRequest(
+                user_id=user_id,
+                chat_id=chat_id,
+                source_url=source_url,
+                options=options,
+                plan=plan,
+                job_id=job_id,
+                mode=mode,
+                manual_clips=manual_clips,
+                storage_mode=storage_mode_enum,
+                output_path=str(allocation.base_path) if allocation.base_path else None,
+                storage_metadata=allocation.metadata,
+            )
+            tracker = ProgressTracker(job_id)
+            state = JobState(
+                request=request,
+                tracker=tracker,
+                bot=bot,
+                chat_id=chat_id,
+                storage_allocation=allocation,
+            )
             self._jobs[job_id] = state
         asyncio.create_task(self._run_job(state))
         return state
 
     async def cancel_job(self, job_id: str, reason: str = "user_cancel") -> None:
-        state = self._jobs.pop(job_id, None)
+        async with self._lock:
+            state = self._jobs.pop(job_id, None)
         if not state:
             return
         if state.storage_allocation:
@@ -132,6 +143,7 @@ class JobPipeline:
                 progress.details[f"meta:{key}"] = str(value)
         if status_lines is None:
             status_lines = ["Traitement en cours…"]
+        state.last_status_lines = status_lines
         message = render_progress_message(progress, status_lines)
         logger.info("pipeline.progress", job_id=job_id, message=message)
         return progress
@@ -215,13 +227,12 @@ class JobPipeline:
         )
         action_task = asyncio.create_task(self._chat_action_loop(state))
         try:
-            with path.open("rb") as stream:
-                await state.bot.send_video(
-                    chat_id=state.chat_id,
-                    video=stream,
-                    supports_streaming=True,
-                    caption=f"Clip {index}/{total}",
-                )
+            await state.bot.send_video(
+                chat_id=state.chat_id,
+                video=FSInputFile(str(path)),
+                supports_streaming=True,
+                caption=f"Clip {index}/{total}",
+            )
         finally:
             progress_task.cancel()
             action_task.cancel()
@@ -293,7 +304,8 @@ class JobPipeline:
         job_id = state.request.job_id
         if state.storage_allocation:
             await self._storage.cleanup(state.storage_allocation, force=force)
-        self._jobs.pop(job_id, None)
+        async with self._lock:
+            self._jobs.pop(job_id, None)
         logger.info("pipeline.cleanup", job_id=job_id)
 
     def _average_upload_rate(self) -> float:

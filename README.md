@@ -22,7 +22,7 @@ cliping_bot/
     handlers.py         # Déclarations des commandes Telegram et du routeur principal.
     keyboards.py        # Génération des claviers inline/boutons.
     messages.py         # Templates de messages localisés en français.
-    routing.py          # Assemblage de l'application python-telegram-bot.
+    routing.py          # Assemblage du routeur aiogram (polling + tâches récurrentes).
   config.py             # Paramètres (tokens, URLs, quotas) avec Pydantic.
   const.py              # Constantes partagées (phases, formats, plans, etc.).
   logging.py            # Initialisation de structlog avec enrichissement contextuel.
@@ -50,7 +50,7 @@ Des tests unitaires couvrent les règles métier essentielles (presets, options 
 Créez un fichier `.env` (ou exportez les variables) avec les paramètres minimums suivants :
 
 ```
-TELEGRAM_TOKEN=123456:ABCDEF
+BOT_TOKEN=123456:ABCDEF
 STORAGE_MODE=local
 LOCAL_OUTPUT_DIR=~/Downloads/Clips_TMP
 LOCAL_DELETE_ON_COMPLETE=true
@@ -62,7 +62,7 @@ LOCAL_RETENTION_MIN=60
 ```
 
 Le mode cloud reste configurable (variables `S3_*`), mais le pipeline fourni ici implémente avant tout le chemin local
-(téléchargement via yt-dlp, découpe FFmpeg, upload direct vers Telegram).
+(téléchargement via yt-dlp, analyse audio/chapitres, encodage FFmpeg, upload direct vers Telegram).
 
 ## Lancement local macOS
 
@@ -89,9 +89,9 @@ Le mode cloud reste configurable (variables `S3_*`), mais le pipeline fourni ici
 
 Au lancement, le bot purge les jobs temporaires plus anciens que `LOCAL_RETENTION_MIN`, contrôle la présence de `ffmpeg` et
 `yt-dlp`, puis accepte les commandes `/clip`, `/select`, `/status`, `/settings`, etc. La commande `/clip` télécharge la source,
-sélectionne automatiquement les segments pertinents (chapitres s'il y en a, sinon analyse des silences), encode chaque clip au
-format demandé (TikTok 9:16 par défaut) puis les envoie directement sur Telegram avant de supprimer les fichiers locaux si
-`LOCAL_DELETE_ON_COMPLETE=true`.
+sélectionne automatiquement les segments pertinents (chapitres s'il y en a, sinon détection des silences et pics d'énergie
+audio), encode chaque clip au format demandé (TikTok 9:16 par défaut, fallback 720p si nécessaire) puis les envoie
+directement sur Telegram avant de supprimer les fichiers locaux si `LOCAL_DELETE_ON_COMPLETE=true`.
 
 ## Documentation
 

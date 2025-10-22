@@ -7,7 +7,7 @@ Telegram (orchestration) et les workers (traitement vidéo) qu'ils s'exécutent 
 ## Vue d'ensemble
 
 ```
-Utilisateur ─Telegram─> Bot (python-telegram-bot)
+Utilisateur ─Telegram─> Bot (aiogram v3)
                      │
                      ├─> Redis (file d'attente jobs + états manuels)
                      ├─> API Workers (HTTP/JSON, idempotent)

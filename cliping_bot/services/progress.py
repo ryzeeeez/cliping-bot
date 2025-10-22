@@ -91,6 +91,15 @@ class ProgressTracker:
         return max(1.0, remaining) if remaining else None
 
 
+PHASE_LABELS = {
+    JobPhase.ANALYSE: "Analyse",
+    JobPhase.AUTO_PICK: "Téléchargement",
+    JobPhase.SUBTITLES: "Préparation des moments",
+    JobPhase.EXPORT: "Encodage",
+    JobPhase.DELIVERY: "Envoi à Telegram",
+}
+
+
 def render_progress_message(progress: JobProgress, status_lines: Iterable[str]) -> str:
     """Construit le message utilisateur (français) avec barre et ETA."""
 
@@ -98,9 +107,9 @@ def render_progress_message(progress: JobProgress, status_lines: Iterable[str]) 
     empty = 20 - filled
     bar = "█" * filled + "░" * empty
     eta = human_readable_timedelta(progress.eta_seconds) if progress.eta_seconds else "calcul..."
+    label = PHASE_LABELS.get(progress.phase, progress.phase.name.title())
     lines = [
-        f"{progress.phase.name.title().replace('_', ' ')} — {progress.percent:.1f}%",
-        f"ETA {eta}",
+        f"{label}… {progress.percent:.1f}% · ETA {eta}",
         f"[{bar}]",
         *status_lines,
     ]

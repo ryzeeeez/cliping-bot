@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from telegram import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 
 from ..const import StorageMode
 from ..services.presets import PRESETS
