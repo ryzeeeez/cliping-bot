@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "cliping-bot"
+version = "0.1.0"
+description = "Bot Telegram de clipping video multi-plateformes"
+authors = ["Cliping Bot Team <team@example.com>"]
+readme = "README.md"
+packages = [{ include = "cliping_bot" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+aiogram = "^3.4"
+pydantic = "^2.4"
+httpx = {version = "^0.27", extras = ["http2"]}
+redis = "^5.0"
+rich = "^13.7"
+structlog = "^23.2"
+dateparser = "^1.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4"
+pytest-asyncio = "^0.23"
+
+[build-system]
+requires = ["poetry-core>=1.6.0"]
+build-backend = "poetry.core.masonry.api"
