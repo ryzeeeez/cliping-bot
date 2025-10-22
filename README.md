@@ -29,7 +29,7 @@ cliping_bot/
   main.py               # Point d'entrée pour lancer le bot.
   models.py             # Modèles Pydantic (presets, options pro, jobs, quotas).
   services/
-    auto_clip.py        # Stratégie de sélection automatique des meilleurs moments (scoring).
+    local_clip.py       # Pipeline local (yt-dlp, sélection segments, encodage FFmpeg).
     manual.py           # Gestion de l'assistant manuel (états et transitions).
     pipeline.py         # Orchestrateur des jobs (phases, progression, stockage).
     presets.py          # Catalogue des presets 1-clic.
@@ -37,7 +37,6 @@ cliping_bot/
     storage.py          # Gestion du stockage local (volume/RAM disk) et cloud (pré-signature S3).
     preferences.py      # Persistance des préférences utilisateur (/settings).
     prerequisites.py    # Vérifications de démarrage (FFmpeg/yt-dlp, stockage prêt).
-    tasks.py            # Client pour les workers locaux/cloud (ingestion, ASR, export).
     telegram.py         # Fonctions utilitaires spécifiques à Telegram (claviers, callbacks).
     plans.py            # Gestion des plans Free/Pro, quotas et facturation.
   telemetry.py          # Instrumentation (métriques, traces, alertes).
@@ -46,51 +45,53 @@ cliping_bot/
 
 Des tests unitaires couvrent les règles métier essentielles (presets, options pro, progression et scoring).
 
-## Lancer le bot en local
+## Configuration
 
-1. Installer les dépendances système : `ffmpeg` et `yt-dlp` doivent être disponibles dans le `PATH`.
-2. Créer un fichier `.env` (ou exporter les variables) avec au minimum :
-   - `TELEGRAM_TOKEN` : token BotFather
-   - `TASKS_API_URL` : endpoint de l'orchestrateur worker (local ou cloud)
-   - `STORAGE_MODE=local|cloud`
-   - Mode Local (par défaut si variable absente)
-     - `LOCAL_OUTPUT_DIR=~/Downloads/Clips_TMP`
-     - `LOCAL_RETENTION_MIN=60`
-     - `LOCAL_DELETE_ON_COMPLETE=true`
-     - `EXTERNAL_VOLUME_PATH=/Volumes/CLIPS` (optionnel)
-     - `USE_RAMDISK=false` / `RAMDISK_SIZE_MB=4096`
-   - Mode Cloud
-     - `STORAGE_PROVIDER=s3`
-     - `S3_ENDPOINT=https://...`
-     - `S3_BUCKET=...`
-     - `S3_ACCESS_KEY_ID=...`
-     - `S3_SECRET_ACCESS_KEY=...`
-     - `STORAGE_TTL_HOURS=24`
-3. Installer les dépendances Python :
+Créez un fichier `.env` (ou exportez les variables) avec les paramètres minimums suivants :
 
-```bash
-pip install poetry
-poetry install
+```
+TELEGRAM_TOKEN=123456:ABCDEF
+STORAGE_MODE=local
+LOCAL_OUTPUT_DIR=~/Downloads/Clips_TMP
+LOCAL_DELETE_ON_COMPLETE=true
+LOCAL_RETENTION_MIN=60
+# Optionnels :
+# EXTERNAL_VOLUME_PATH=/Volumes/CLIPS
+# USE_RAMDISK=false
+# RAMDISK_SIZE_MB=4096
 ```
 
-4. Lancer le bot :
+Le mode cloud reste configurable (variables `S3_*`), mais le pipeline fourni ici implémente avant tout le chemin local
+(téléchargement via yt-dlp, découpe FFmpeg, upload direct vers Telegram).
 
-```bash
-poetry run python -m cliping_bot.main
-```
+## Lancement local macOS
 
-Au démarrage, le bot vérifie la présence de `ffmpeg`/`yt-dlp` et prépare le stockage local (création du dossier, purge des
-fichiers > `LOCAL_RETENTION_MIN`). La commande `/settings` permet ensuite à chaque utilisateur de basculer entre le mode Local
-et le mode Cloud :
+1. Installer les dépendances système avec Homebrew :
 
-- *Local* : les vidéos sont téléchargées/transcodées sur la machine hôte (volume externe prioritaire, sinon RAM disk si activé,
-  sinon dossier local). `LOCAL_DELETE_ON_COMPLETE=true` supprime les fichiers dès l'envoi réussi vers Telegram, sinon une purge
-  périodique les retire.
-- *Cloud* : pipeline URL→URL avec génération d'URL pré-signée (TTL < 24 h) et envoi direct de l'URL à Telegram.
+   ```bash
+   brew install ffmpeg yt-dlp
+   ```
 
-Le bot utilise python-telegram-bot en mode async, Redis pour la file d'attente/état et httpx pour communiquer avec les services
-de traitement (transcodage, ASR, scoring). Les workers renvoient soit un chemin local (mode local) soit une URL pré-signée
-(mode cloud) afin de finaliser la livraison vers Telegram.
+2. Installer les dépendances Python :
+
+   ```bash
+   pip install poetry
+   poetry install
+   ```
+
+3. Vérifier/adapter le dossier local configuré (`LOCAL_OUTPUT_DIR`) : il est créé automatiquement au démarrage si besoin.
+
+4. Lancer le bot en mode polling :
+
+   ```bash
+   poetry run python -m cliping_bot.main
+   ```
+
+Au lancement, le bot purge les jobs temporaires plus anciens que `LOCAL_RETENTION_MIN`, contrôle la présence de `ffmpeg` et
+`yt-dlp`, puis accepte les commandes `/clip`, `/select`, `/status`, `/settings`, etc. La commande `/clip` télécharge la source,
+sélectionne automatiquement les segments pertinents (chapitres s'il y en a, sinon analyse des silences), encode chaque clip au
+format demandé (TikTok 9:16 par défaut) puis les envoie directement sur Telegram avant de supprimer les fichiers locaux si
+`LOCAL_DELETE_ON_COMPLETE=true`.
 
 ## Documentation
 

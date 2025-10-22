@@ -84,6 +84,7 @@ class JobProgress(BaseModel):
 
 class JobRequest(BaseModel):
     user_id: int
+    chat_id: int
     source_url: HttpUrl
     options: ClipOptions
     plan: SubscriptionPlan

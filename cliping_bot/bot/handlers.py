@@ -132,6 +132,8 @@ async def clip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         state = await pipeline.submit_job(
             user_id=update.effective_user.id,
+            chat_id=update.effective_chat.id,
+            bot=context.bot,
             source_url=url,
             options=options,
             plan=plan,
@@ -166,6 +168,8 @@ async def select_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     options = preset.options
     state = await pipeline.submit_job(
         user_id=update.effective_user.id,
+        chat_id=update.effective_chat.id,
+        bot=context.bot,
         source_url=url,
         options=options,
         plan=plan,
